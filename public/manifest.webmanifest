@@ -1,0 +1,12 @@
+{
+  "name": "SafePath AI",
+  "short_name": "SafePath",
+  "description": "Smarter routes. Safer journeys.",
+  "start_url": "/",
+  "display": "standalone",
+  "background_color": "#ffffff",
+  "theme_color": "#2563eb",
+  "icons": [
+    { "src": "/safepath-icon.svg", "sizes": "any", "type": "image/svg+xml", "purpose": "any maskable" }
+  ]
+}
