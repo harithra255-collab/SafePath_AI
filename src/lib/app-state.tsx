@@ -22,6 +22,16 @@ export type IncidentReport = {
   createdAt: number;
 };
 
+export type TripRecord = {
+  id: string;
+  destination: string;
+  score: number;
+  mode: "DRIVING" | "WALKING" | "BICYCLING" | "TRANSIT";
+  distanceKm: number;
+  durationMin: number;
+  startedAt: number;
+};
+
 type State = {
   theme: ThemeMode;
   setTheme: (t: ThemeMode) => void;
@@ -39,6 +49,8 @@ type State = {
   setSound: (v: boolean) => void;
   reports: IncidentReport[];
   addReport: (r: Omit<IncidentReport, "id" | "createdAt">) => void;
+  trips: TripRecord[];
+  addTrip: (trip: Omit<TripRecord, "id" | "startedAt">) => void;
   recentSearches: string[];
   pushSearch: (s: string) => void;
   onboarded: boolean;
@@ -75,6 +87,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
   const [voiceNav, setVoiceNavState] = useState(true);
   const [sound, setSoundState] = useState(true);
   const [reports, setReports] = useState<IncidentReport[]>([]);
+  const [trips, setTrips] = useState<TripRecord[]>([]);
   const [recentSearches, setRecent] = useState<string[]>([]);
   const [onboarded, setOnboardedState] = useState(true);
   const [systemDark, setSystemDark] = useState(false);
@@ -87,6 +100,7 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     setVoiceNavState(read("sp.voice", true));
     setSoundState(read("sp.sound", true));
     setReports(read<IncidentReport[]>("sp.reports", []));
+    setTrips(read<TripRecord[]>("sp.trips", []));
     setRecent(read<string[]>("sp.recent", []));
     setOnboardedState(read("sp.onboarded", false));
     const mq = window.matchMedia("(prefers-color-scheme: dark)");
@@ -146,6 +160,14 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
     });
   }, []);
 
+  const addTrip = useCallback((trip: Omit<TripRecord, "id" | "startedAt">) => {
+    setTrips((prev) => {
+      const next = [{ ...trip, id: `trip-${Date.now()}`, startedAt: Date.now() }, ...prev].slice(0, 100);
+      write("sp.trips", next);
+      return next;
+    });
+  }, []);
+
   const pushSearch = useCallback((s: string) => {
     setRecent((prev) => {
       const next = [s, ...prev.filter((x) => x !== s)].slice(0, 8);
@@ -172,6 +194,8 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       setSound,
       reports,
       addReport,
+      trips,
+      addTrip,
       recentSearches,
       pushSearch,
       onboarded,
@@ -193,6 +217,8 @@ export function AppStateProvider({ children }: { children: ReactNode }) {
       setSound,
       reports,
       addReport,
+      trips,
+      addTrip,
       recentSearches,
       pushSearch,
       onboarded,

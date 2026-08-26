@@ -35,20 +35,68 @@ export const Route = createFileRoute("/profile")({
   component: ProfilePage,
 });
 
-const CONTACTS = [
-  { name: "Aarthi (Mother)", phone: "+91 8807328390" },
-  { name: "Vikram (Brother)", phone: "+91 9944179977" },
-  { name: "Hostel Warden", phone: "+91 90000 11223" },
-];
+type EmergencyContact = {
+  name: string;
+  phone: string;
+};
+
+type MedicalInfo = {
+  bloodGroup: string;
+  allergies: string;
+  conditions: string;
+  insurance: string;
+};
+
+function getEmergencyContacts(): EmergencyContact[] {
+  try {
+    const saved = localStorage.getItem("safepath-emergency-contacts");
+    return saved ? JSON.parse(saved) : [];
+  } catch {
+    return [];
+  }
+}
+
+function getMedicalInfo(): MedicalInfo {
+  try {
+    const saved = localStorage.getItem("safepath-medical-info");
+    return saved ? JSON.parse(saved) : {
+      bloodGroup: "",
+      allergies: "",
+      conditions: "",
+      insurance: "",
+    };
+  } catch {
+    return {
+      bloodGroup: "",
+      allergies: "",
+      conditions: "",
+      insurance: "",
+    };
+  }
+}
+
+function getFavoritePlaces(): string[] {
+  try { return JSON.parse(localStorage.getItem("sp.favorite-places") || "[]") as string[]; } catch { return []; }
+}
 
 function ProfilePage() {
-  const { t, reports } = useApp();
+  const { t, reports, trips } = useApp();
 
   const [userName, setUserName] = useState("User");
   const [userEmail, setUserEmail] = useState("");
+  const [emergencyContacts, setEmergencyContacts] = useState<EmergencyContact[]>([]);
+  const [medicalInfo, setMedicalInfo] = useState<MedicalInfo>({
+    bloodGroup: "",
+    allergies: "",
+    conditions: "",
+    insurance: "",
+  });
+  const [favoriteInput, setFavoriteInput] = useState("");
+  const [favoritePlaces, setFavoritePlaces] = useState<string[]>([]);
 
   const favourites = LOCATIONS.slice(0, 3);
-  const history = LOCATIONS.slice(3, 7);
+  const averageScore = trips.length ? Math.round(trips.reduce((total, trip) => total + trip.score, 0) / trips.length) : 0;
+  const safePercent = trips.length ? Math.round((trips.filter((trip) => trip.score >= 78).length / trips.length) * 100) : 0;
 
   useEffect(() => {
     async function loadUser() {
@@ -68,6 +116,21 @@ function ProfilePage() {
     }
 
     loadUser();
+  }, []);
+
+  useEffect(() => {
+    setEmergencyContacts(getEmergencyContacts());
+    setMedicalInfo(getMedicalInfo());
+    setFavoritePlaces(getFavoritePlaces());
+
+    const handleStorageChange = () => {
+      setEmergencyContacts(getEmergencyContacts());
+      setMedicalInfo(getMedicalInfo());
+      setFavoritePlaces(getFavoritePlaces());
+    };
+
+    window.addEventListener("storage", handleStorageChange);
+    return () => window.removeEventListener("storage", handleStorageChange);
   }, []);
 
   return (
@@ -90,43 +153,62 @@ function ProfilePage() {
             </Link>
           </div>
           <div className="mt-4 grid grid-cols-3 gap-2 text-center">
-            <Stat label="Trips" value="144" />
-            <Stat label="Safe %" value="87%" />
-            <Stat label="Reports" value={`${12 + reports.length}`} />
+            <Stat label="Trips" value={`${trips.length}`} />
+            <Stat label="Safe %" value={`${safePercent}%`} />
+            <Stat label="Avg score" value={`${averageScore}`} />
           </div>
         </section>
 
         <Card title="Medical Information" icon={Droplet}>
-          <Row k="Blood group" v="O+" />
-          <Row k="Allergies" v="Penicillin, dust" />
-          <Row k="Conditions" v="Mild asthma — inhaler in bag" />
-          <Row k="Insurance" v="Star Health · SH-88231907" />
+          <Row k="Blood group" v={medicalInfo.bloodGroup || "Not added"} />
+          <Row k="Allergies" v={medicalInfo.allergies || "Not added"} />
+          <Row k="Conditions" v={medicalInfo.conditions || "Not added"} />
+          <Row k="Insurance" v={medicalInfo.insurance || "Not added"} />
         </Card>
 
         <Card title="Emergency Contacts" icon={Phone}>
-          {CONTACTS.map((c) => (
-            <div key={c.phone} className="flex items-center justify-between py-1.5">
-              <div>
-                <p className="text-sm font-semibold">{c.name}</p>
-                <p className="text-[0.68rem] text-muted-foreground">{c.phone}</p>
+          {emergencyContacts.length > 0 ? (
+            emergencyContacts.map((c) => (
+              <div key={`${c.phone}-${c.name}`} className="flex items-center justify-between gap-3 py-1.5">
+                <div className="min-w-0 flex-1">
+                  <p className="truncate text-sm font-semibold">{c.name}</p>
+                  <p className="text-[0.68rem] text-muted-foreground">{c.phone}</p>
+                </div>
+                <div className="flex items-center gap-2">
+                  <a
+                    href={`tel:${c.phone.replace(/\D/g, "")}`}
+                    className="press grid h-8 w-8 place-items-center rounded-xl bg-primary/10 text-primary"
+                    aria-label={`Call ${c.name}`}
+                  >
+                    <Phone className="h-4 w-4" />
+                  </a>
+                  <span className="rounded-full bg-safe/15 px-2 py-0.5 text-[0.6rem] font-bold text-safe">
+                    Auto-notify
+                  </span>
+                </div>
               </div>
-              <span className="rounded-full bg-safe/15 px-2 py-0.5 text-[0.6rem] font-bold text-safe">
-                Auto-notify
-              </span>
+            ))
+          ) : (
+            <div className="py-2 text-sm text-muted-foreground">
+              No emergency contacts saved yet. Add one in Settings.
             </div>
-          ))}
+          )}
         </Card>
 
         <Card title="Favourite Places" icon={Star}>
-          {favourites.map((f) => (
-            <Row key={f.id} k={f.name} v={`Score ${f.score}`} />
+          <div className="mb-2 flex gap-2">
+            <input value={favoriteInput} onChange={(e) => setFavoriteInput(e.target.value)} placeholder="Add a favourite place" className="min-w-0 flex-1 rounded-xl border bg-background px-3 py-2 text-xs outline-none focus:ring-2 focus:ring-primary" />
+            <button onClick={() => { const place = favoriteInput.trim(); if (!place) return; const next = [...favoritePlaces, place]; setFavoritePlaces(next); localStorage.setItem("sp.favorite-places", JSON.stringify(next)); setFavoriteInput(""); }} className="press rounded-xl bg-primary px-3 text-xs font-bold text-primary-foreground">Add</button>
+          </div>
+          {[...favoritePlaces.map((name) => ({ id: name, name, score: 0 })), ...favourites].slice(0, 6).map((f) => (
+            <Row key={f.id} k={f.name} v={f.score ? `Score ${f.score}` : "Saved place"} />
           ))}
         </Card>
 
         <Card title="Travel History" icon={History}>
-          {history.map((h, i) => (
-            <Row key={h.id} k={h.name} v={`${i + 1} day${i ? "s" : ""} ago`} />
-          ))}
+          {trips.length > 0 ? trips.slice(0, 5).map((trip) => (
+            <Row key={trip.id} k={trip.destination} v={`${trip.mode.toLowerCase()} · ${trip.distanceKm.toFixed(1)} km · ${trip.durationMin} min`} />
+          )) : <Row k="No trips recorded" v="Start navigation to build history" />}
         </Card>
 
         <Card title="Offline Maps" icon={MapPinned}>
@@ -141,7 +223,7 @@ function ProfilePage() {
               <div key={a.id} className="rounded-2xl bg-secondary p-3">
                 <Heart className="h-4 w-4 text-accent" />
                 <p className="mt-1 text-[0.72rem] font-bold">{a.label}</p>
-                <p className="text-[0.62rem] text-muted-foreground">{a.detail}</p>
+                <p className="text-[0.62rem] text-muted-foreground">{a.id === "guardian" ? `${reports.length} reports submitted` : a.id === "night" ? `${trips.filter((trip) => trip.mode === "DRIVING").length} trips recorded` : a.id === "streak" ? `${trips.filter((trip) => trip.score >= 78).length} safe trips` : `${typeof window === "undefined" ? 0 : Number(localStorage.getItem("sp.sos-count") || 0)} SOS activations`}</p>
               </div>
             ))}
           </div>

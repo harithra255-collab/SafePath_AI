@@ -48,9 +48,22 @@ type EmergencyContact = {
   phone: string;
 };
 
+type MedicalInfo = {
+  bloodGroup: string;
+  allergies: string;
+  conditions: string;
+  insurance: string;
+};
+
 function SettingsPage() {
   const [contactName, setContactName] = useState("");
   const [contactPhone, setContactPhone] = useState("");
+  const [medicalInfo, setMedicalInfo] = useState<MedicalInfo>({
+    bloodGroup: "",
+    allergies: "",
+    conditions: "",
+    insurance: "",
+  });
 
   const [emergencyContacts, setEmergencyContacts] = useState<
     EmergencyContact[]
@@ -65,6 +78,8 @@ function SettingsPage() {
       return [];
     }
   });
+
+  const [isMedicalLoaded, setIsMedicalLoaded] = useState(false);
 
   const {
     t,
@@ -81,6 +96,24 @@ function SettingsPage() {
     sound,
     setSound,
   } = useApp();
+
+  useState(() => {
+    try {
+      const saved = localStorage.getItem("safepath-medical-info");
+      if (saved) {
+        setMedicalInfo(JSON.parse(saved));
+      }
+      setIsMedicalLoaded(true);
+    } catch {
+      setIsMedicalLoaded(true);
+    }
+  });
+
+  function updateMedicalField(field: keyof MedicalInfo, value: string) {
+    const next = { ...medicalInfo, [field]: value };
+    setMedicalInfo(next);
+    localStorage.setItem("safepath-medical-info", JSON.stringify(next));
+  }
 
   function addEmergencyContact() {
     const name = contactName.trim();
@@ -130,6 +163,77 @@ function SettingsPage() {
     );
 
     toast.success("Emergency contact removed.");
+  }
+
+  function sendTestAlert() {
+    const contacts = emergencyContacts
+      .map((contact) => ({
+        name: contact.name.trim(),
+        phone: contact.phone.replace(/\D/g, ""),
+      }))
+      .filter((contact) => contact.name && contact.phone);
+
+    if (contacts.length === 0) {
+      toast.error("Add at least one emergency contact before sending a test alert.");
+      return;
+    }
+
+    if (!navigator.geolocation) {
+      toast.error("Location access is not available in this browser.");
+      return;
+    }
+
+    navigator.geolocation.getCurrentPosition(
+      async (position) => {
+        const latitude = position.coords.latitude;
+        const longitude = position.coords.longitude;
+        const timestamp = new Date().toISOString();
+        const locationUrl = `https://www.google.com/maps?q=${latitude},${longitude}`;
+
+        const message =
+          "SAFEPATH AI TEST ALERT\n\n" +
+          "This is a test message to verify emergency contact delivery.\n\n" +
+          `Current location: ${locationUrl}\n\n` +
+          `Latitude: ${latitude.toFixed(6)}\n` +
+          `Longitude: ${longitude.toFixed(6)}\n` +
+          `Updated: ${timestamp}`;
+
+        const phoneNumbers = contacts.map((contact) => contact.phone);
+
+        try {
+          const response = await fetch("http://localhost:3001/api/send-sms", {
+            method: "POST",
+            headers: {
+              "Content-Type": "application/json",
+            },
+            body: JSON.stringify({
+              to: phoneNumbers,
+              message,
+            }),
+          });
+
+          const result = await response.json();
+
+          if (!response.ok || !result.ok) {
+            throw new Error(result.error || "Test SMS failed");
+          }
+
+          toast.success("Test alert sent successfully.");
+        } catch (error) {
+          toast.error(
+            error instanceof Error ? error.message : "Unable to send test alert.",
+          );
+        }
+      },
+      () => {
+        toast.error("Unable to access your live location. Please allow location access.");
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 10000,
+        maximumAge: 0,
+      },
+    );
   }
 
   return (
@@ -309,6 +413,62 @@ function SettingsPage() {
           />
         </Section>
 
+        {/* MEDICAL INFORMATION */}
+        <Section title="Medical Information" icon={Phone}>
+          <div className="space-y-4">
+            <div className="rounded-2xl bg-primary/10 p-3">
+              <p className="text-xs font-semibold text-primary">Add medical details for emergencies</p>
+              <p className="mt-1 text-[0.68rem] text-muted-foreground">
+                Save your blood group, allergies, medical conditions and insurance for quick access.
+              </p>
+            </div>
+
+            <div>
+              <label className="mb-1.5 block text-xs font-semibold">Blood group</label>
+              <input
+                type="text"
+                value={medicalInfo.bloodGroup}
+                onChange={(e) => updateMedicalField("bloodGroup", e.target.value)}
+                placeholder="O+"
+                className="w-full rounded-xl border bg-background px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-primary"
+              />
+            </div>
+
+            <div>
+              <label className="mb-1.5 block text-xs font-semibold">Allergies</label>
+              <input
+                type="text"
+                value={medicalInfo.allergies}
+                onChange={(e) => updateMedicalField("allergies", e.target.value)}
+                placeholder="Penicillin, dust"
+                className="w-full rounded-xl border bg-background px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-primary"
+              />
+            </div>
+
+            <div>
+              <label className="mb-1.5 block text-xs font-semibold">Conditions</label>
+              <input
+                type="text"
+                value={medicalInfo.conditions}
+                onChange={(e) => updateMedicalField("conditions", e.target.value)}
+                placeholder="Mild asthma — inhaler in bag"
+                className="w-full rounded-xl border bg-background px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-primary"
+              />
+            </div>
+
+            <div>
+              <label className="mb-1.5 block text-xs font-semibold">Insurance</label>
+              <input
+                type="text"
+                value={medicalInfo.insurance}
+                onChange={(e) => updateMedicalField("insurance", e.target.value)}
+                placeholder="Star Health · SH-88231907"
+                className="w-full rounded-xl border bg-background px-4 py-3 text-sm outline-none focus:ring-2 focus:ring-primary"
+              />
+            </div>
+          </div>
+        </Section>
+
         {/* ================================================= */}
         {/* EMERGENCY CONTACTS */}
         {/* ================================================= */}
@@ -374,6 +534,15 @@ function SettingsPage() {
             >
               + Add Emergency Contact
             </button>
+
+            {emergencyContacts.length > 0 && (
+              <button
+                onClick={sendTestAlert}
+                className="press w-full rounded-xl border border-primary/50 bg-primary/10 py-3 text-sm font-bold text-primary"
+              >
+                Send Test Alert
+              </button>
+            )}
 
             {/* SAVED CONTACTS */}
             {emergencyContacts.length > 0 && (

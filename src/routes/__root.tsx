@@ -162,6 +162,16 @@ function AuthGate({ children }: { children: ReactNode }) {
     if (!loading && session && publicPath && !isPasswordRecovery) void navigate({ to: "/", replace: true });
   }, [isPasswordRecovery, loading, navigate, publicPath, session]);
 
+  useEffect(() => {
+    if (!loading && session && !publicPath && navigator.geolocation) {
+      navigator.geolocation.getCurrentPosition(() => undefined, () => undefined, {
+        enableHighAccuracy: true,
+        timeout: 10000,
+        maximumAge: 0,
+      });
+    }
+  }, [loading, publicPath, session]);
+
   if (publicPath) return <>{children}</>;
   if (loading) return <div className="grid min-h-screen place-items-center bg-background text-sm text-muted-foreground">Checking your secure session…</div>;
   if (!session) return null;

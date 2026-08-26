@@ -62,6 +62,12 @@ export type SafePathLocation = {
   crimeIndex: number;
   responseMin: number;
   services: NearbyService[];
+  facts?: {
+    description: string;
+    category: string;
+    source: string;
+    sourceUrl: string;
+  };
 };
 
 const F = (status: string, value: number, note: string) => ({ status, value, note });

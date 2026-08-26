@@ -1,6 +1,5 @@
 import { createFileRoute, Link, useNavigate , redirect} from "@tanstack/react-router";
 import { useEffect, useMemo, useRef, useState } from "react";
-import { LiveMap } from "@/components/safepath/LiveMap";
 import { supabase } from "@/lib/supabase";
 
 import {
@@ -23,6 +22,7 @@ import {
   Moon,
   Navigation,
   Pause,
+  Phone,
   Play,
   Route as RouteIcon,
   Search,
@@ -46,6 +46,7 @@ import { useApp, playBeep } from "@/lib/app-state";
 import { useTrip } from "@/lib/trip-state";
 import { useRouteWeather } from "@/lib/weather";
 import { useOpenRoute } from "@/lib/openroute";
+import { geocodeDestination } from "@/lib/destination";
 import {
   aiSummary,
   bandColor,
@@ -131,7 +132,6 @@ const ICONS: Record<FactorKey, typeof Shield> = {
 // The built-in map keeps route planning usable while a Google Maps key is being
 // configured. Set VITE_USE_GOOGLE_MAPS=true only after the Google Maps APIs and
 // billing/referrer settings have been configured for this app.
-const LIVE_GOOGLE_MAPS_ENABLED = import.meta.env.VITE_USE_GOOGLE_MAPS === "true";
 type EmergencyContact = {
   name: string;
   phone: string;
@@ -281,10 +281,11 @@ function Onboarding({ onDone }: { onDone: () => void }) {
 }
 
 function Home() {
-  const { t, lang, offline, recentSearches, pushSearch, sound, voiceNav } = useApp();
+  const { t, lang, offline, recentSearches, pushSearch, sound, voiceNav, addTrip } = useApp();
   const [sosOpen, setSosOpen] = useState(false);
   const [sosLoading, setSosLoading] = useState(false);
-  const { dest, setDestId } = useTrip();
+  const [emergencyContacts, setEmergencyContacts] = useState<EmergencyContact[]>([]);
+  const { dest, setDestId, setDestination } = useTrip();
   const navigate = useNavigate();
   const [query, setQuery] = useState("");
   const [focused, setFocused] = useState(false);
@@ -300,9 +301,12 @@ function Home() {
   const [travelMode, setTravelMode] = useState<TravelMode>("DRIVING");
   const [liveRoutes, setLiveRoutes] = useState<LiveRouteInfo[]>([]);
   const [usingCurrentLocation, setUsingCurrentLocation] = useState<boolean | null>(null);
+  const [googleRouteStatus, setGoogleRouteStatus] = useState("");
+  const [locationRefresh, setLocationRefresh] = useState(0);
   const [why, setWhy] = useState<RouteOption | null>(null);
   const [progress, setProgress] = useState<number | null>(null);
   const [playing, setPlaying] = useState(false);
+  const tripRecordedRef = useRef(false);
   const timerRef = useRef<number | null>(null);
 
   /* voice assistant state */
@@ -321,7 +325,11 @@ function Home() {
   const selectedRouteIndex = Math.max(0, routes.findIndex((r) => r.id === activeRouteId));
   const currentTravel = TRANSPORTATION_DETAILS[travelMode];
   const { route: orsRoute, loading: orsLoading, unavailable: orsUnavailable } = useOpenRoute(dest, travelMode);
-  const displayedDuration = orsRoute?.duration ?? liveRoutes[selectedRouteIndex]?.durationInTraffic ?? liveRoutes[selectedRouteIndex]?.duration ?? (activeRoute ? `${activeRoute.minutes} ${t.minutes}` : "Choose a destination");
+  const liveSelectedRoute = liveRoutes[selectedRouteIndex];
+  const displayedDuration = liveSelectedRoute?.durationInTraffic ?? liveSelectedRoute?.duration ?? (orsRoute?.duration ?? "Google route unavailable");
+  const displayedDistance = liveSelectedRoute?.distance ?? (orsRoute?.distance ?? "Google route unavailable");
+  const displayedDurationMinutes = parseDurationMinutes(displayedDuration);
+  const displayedDistanceKm = parseDistanceKm(displayedDistance);
   const factors = useMemo(() => (dest ? buildFactors(dest) : []), [dest]);
   const { weather: liveWeather, loading: weatherLoading, unavailable: weatherUnavailable } = useRouteWeather(dest?.lat, dest?.lng);
 
@@ -341,6 +349,14 @@ function Home() {
   useEffect(() => () => stopSpeaking(), []);
 
   useEffect(() => {
+    setEmergencyContacts(getEmergencyContacts());
+
+    const handleStorage = () => setEmergencyContacts(getEmergencyContacts());
+    window.addEventListener("storage", handleStorage);
+    return () => window.removeEventListener("storage", handleStorage);
+  }, []);
+
+  useEffect(() => {
     if (!playing || !activeRoute) return;
     timerRef.current = window.setInterval(() => {
       setProgress((p) => {
@@ -348,6 +364,7 @@ function Home() {
         if (next >= 1) {
           window.clearInterval(timerRef.current!);
           setPlaying(false);
+          tripRecordedRef.current = false;
           toast.success("Arrived safely at your destination");
           return 1;
         }
@@ -414,134 +431,177 @@ function Home() {
     }, 900);
   }
 
+  async function searchAnyDestination() {
+    const destination = query.trim();
+    if (!destination) return;
+    const known = findLocations(destination)[0];
+    if (known) {
+      select(known.id, known.name);
+      return;
+    }
+    setAnalysing(true);
+    setFocused(false);
+    try {
+      const geocoded = await geocodeDestination(destination);
+      setDestination(geocoded);
+      pushSearch(geocoded.name);
+      toast.success("Destination found. Safety sources are being combined.");
+    } catch (error) {
+      toast.error(error instanceof Error ? error.message : "Unable to search destination.");
+    } finally {
+      setAnalysing(false);
+    }
+  }
+
   function startNavigation(id: RouteOption["id"], say = true) {
     setActiveRouteId(id);
     firedCues.current = new Set();
     dangerFired.current = false;
     setProgress(0);
     setPlaying(true);
+    recordCurrentTrip(travelMode);
     if (say) announce("Starting navigation on the selected route.");
   }
 
-  function openGoogleMaps(id: RouteOption["id"]) {
+  function recordCurrentTrip(mode: TravelMode = travelMode) {
+    if (!dest || !activeRoute || tripRecordedRef.current) return;
+    const distanceText = liveSelectedRoute?.distance ?? orsRoute?.distance;
+    const durationText = liveSelectedRoute?.durationInTraffic ?? liveSelectedRoute?.duration ?? orsRoute?.duration;
+    const distanceKm = distanceText ? parseDistanceKm(distanceText) : activeRoute.km;
+    const durationMin = durationText ? parseDurationMinutes(durationText) : activeRoute.minutes;
+    addTrip({ destination: dest.name, score: dest.score, mode, distanceKm, durationMin });
+    tripRecordedRef.current = true;
+  }
+
+  function openGoogleMaps(id: RouteOption["id"], mode: TravelMode = travelMode) {
     if (!dest) return;
     setActiveRouteId(id);
-    const mode = {
+    recordCurrentTrip(mode);
+    const googleMode = {
       DRIVING: "driving",
       WALKING: "walking",
       BICYCLING: "bicycling",
       TRANSIT: "transit",
-    }[travelMode];
+    }[mode];
     const url = new URL("https://www.google.com/maps/dir/");
     url.searchParams.set("api", "1");
     url.searchParams.set("destination", `${dest.lat},${dest.lng}`);
-    url.searchParams.set("travelmode", mode);
+    url.searchParams.set("travelmode", googleMode);
     window.open(url.toString(), "_blank", "noopener,noreferrer");
     toast.success("Opening Google Maps for directions from your current location.");
   }
     async function handleSOS() {
-    setSosLoading(true);
+  setSosLoading(true);
 
-    try {
-      const contacts = getEmergencyContacts();
+  try {
+    const contacts = getEmergencyContacts();
+    const validContacts = contacts
+      .map((contact) => ({
+        name: contact.name.trim(),
+        phone: contact.phone.replace(/\D/g, ""),
+      }))
+      .filter((contact) => contact.name && contact.phone);
 
-      if (contacts.length === 0) {
-        toast.error(
-          "No emergency contact found. Add a contact in Settings first.",
-        );
-        setSosLoading(false);
-        return;
-      }
-
-      if (!navigator.geolocation) {
-        toast.error(
-          "Location is not supported by this browser.",
-        );
-        setSosLoading(false);
-        return;
-      }
-
-      navigator.geolocation.getCurrentPosition(
-        (position) => {
-          const latitude = position.coords.latitude;
-          const longitude = position.coords.longitude;
-
-          const locationUrl =
-            `https://www.google.com/maps?q=${latitude},${longitude}`;
-
-          const message =
-            `🚨 SAFEPATH AI SOS ALERT 🚨\n\n` +
-            `I need emergency assistance.\n\n` +
-            `My current location:\n${locationUrl}\n\n` +
-            `Latitude: ${latitude.toFixed(6)}\n` +
-            `Longitude: ${longitude.toFixed(6)}\n\n` +
-            `Please contact me immediately.`;
-
-          setSosLoading(false);
-          setSosOpen(false);
-
-          /*
-           * Browser share dialog.
-           * The user can choose the emergency contact
-           * or messaging application from their device.
-           */
-          if (navigator.share) {
-            navigator
-              .share({
-                title: "SafePath AI SOS Alert",
-                text: message,
-              })
-              .then(() => {
-                toast.success(
-                  "SOS information shared successfully.",
-                );
-              })
-              .catch(() => {
-                toast("SOS sharing cancelled.");
-              });
-          } else {
-            /*
-             * Fallback for browsers without Web Share API.
-             */
-            navigator.clipboard
-              ?.writeText(message)
-              .then(() => {
-                toast.success(
-                  "SOS message copied. Send it to your emergency contact.",
-                );
-              })
-              .catch(() => {
-                toast.error(
-                  "Unable to prepare SOS message.",
-                );
-              });
-          }
-        },
-
-        () => {
-          setSosLoading(false);
-
-          toast.error(
-            "Unable to get your location. Please allow location access.",
-          );
-        },
-
-        {
-          enableHighAccuracy: true,
-          timeout: 10000,
-          maximumAge: 0,
-        },
-      );
-    } catch {
-      setSosLoading(false);
-
+    if (validContacts.length === 0) {
       toast.error(
-        "Something went wrong while activating SOS.",
+        "No emergency contact found. Add a contact in Settings first.",
       );
+      setSosLoading(false);
+      return;
     }
+
+    if (!navigator.geolocation) {
+      toast.error("Location is not supported by this browser.");
+      setSosLoading(false);
+      return;
+    }
+
+    const phoneNumbers = validContacts.map((contact) => contact.phone);
+    const medical = (() => {
+      try {
+        return JSON.parse(localStorage.getItem("safepath-medical-info") || "{}") as Record<string, string>;
+      } catch { return {}; }
+    })();
+    let lastSentAt = 0;
+    const composeSms = async (latitude: number, longitude: number, liveUpdate = false) => {
+      const locationUrl = `https://www.google.com/maps?q=${latitude},${longitude}`;
+      const timestamp = new Date().toISOString();
+
+      const message =
+        `SAFEPATH AI SOS ALERT\n\n` +
+        `I need emergency assistance.\n\n` +
+        `My current location:\n${locationUrl}\n\n` +
+        `Latitude: ${latitude.toFixed(6)}\n` +
+        `Longitude: ${longitude.toFixed(6)}\n` +
+        `Updated: ${timestamp}\n\n` +
+        `Medical information:\n` +
+        `Blood group: ${medical.bloodGroup || "Not provided"}\n` +
+        `Allergies: ${medical.allergies || "Not provided"}\n` +
+        `Conditions: ${medical.conditions || "Not provided"}\n` +
+        `Insurance: ${medical.insurance || "Not provided"}\n\n` +
+        `Please contact me immediately.`;
+
+      try {
+        const smsUrl = import.meta.env.VITE_SMS_API_URL || `http://${window.location.hostname}:3001/api/send-sms`;
+        const response = await fetch(smsUrl, {
+          method: "POST",
+          headers: {
+            "Content-Type": "application/json",
+          },
+          body: JSON.stringify({
+            to: phoneNumbers,
+            message,
+          }),
+        });
+
+        const result = await response.json();
+
+        lastSentAt = Date.now();
+        setSosLoading(false);
+        if (!liveUpdate) setSosOpen(false);
+        if (!liveUpdate) localStorage.setItem("sp.sos-count", `${Number(localStorage.getItem("sp.sos-count") || 0) + 1}`);
+
+        if (!response.ok || !result.ok) {
+          throw new Error(result.error || "SMS send failed");
+        }
+
+        toast.success(liveUpdate ? "Live SOS location update sent." : `Emergency SMS sent to ${validContacts.length} saved contact${validContacts.length > 1 ? "s" : ""}.`);
+      } catch (error) {
+        setSosLoading(false);
+        toast.error(
+          error instanceof Error ? error.message : "Unable to send emergency SMS.",
+        );
+      }
+    };
+
+    const watchId = navigator.geolocation.watchPosition(
+      (position) => {
+        const latitude = position.coords.latitude;
+        const longitude = position.coords.longitude;
+        if (!lastSentAt || Date.now() - lastSentAt >= 60_000) void composeSms(latitude, longitude, lastSentAt > 0);
+      },
+      () => {
+        setSosLoading(false);
+        toast.error("Unable to get your current location. Please allow location access.");
+      },
+      {
+        enableHighAccuracy: true,
+        timeout: 10000,
+        maximumAge: 0,
+      },
+    );
+    window.setTimeout(() => navigator.geolocation.clearWatch(watchId), 15 * 60_000);
+  } catch {
+    setSosLoading(false);
+
+    toast.error(
+      "Something went wrong while activating SOS.",
+    );
   }
+}
   function stopNavigation(say = true) {
     setPlaying(false);
+    tripRecordedRef.current = false;
     firedCues.current = new Set();
     dangerFired.current = false;
     if (say) announce("Navigation stopped.");
@@ -633,20 +693,42 @@ function Home() {
   }
 
   return (
-    <div className="space-y-4">
-    <section className="space-y-3">
-  <div>
-    <h2 className="font-display text-lg font-bold">
-      Live Safety Map
-    </h2>
+  <div className="space-y-4">
 
-    <p className="text-xs text-muted-foreground">
-      Your current location is updated in real time.
-    </p>
-  </div>
+    {dest && (
+      <section className="space-y-2">
+        <div className="flex items-end justify-between gap-3">
+          <div>
+            <p className="text-[0.65rem] font-bold uppercase tracking-widest text-muted-foreground">Live Google routes</p>
+            <p className="mt-1 text-xs text-muted-foreground">Current traffic and travel time for {currentTravel.label.toLowerCase()}.</p>
+          </div>
+          <button
+            onClick={() => {
+              setUsingCurrentLocation(null);
+              setLocationRefresh((value) => value + 1);
+              toast("Requesting your current location…");
+            }}
+            className="press flex shrink-0 items-center gap-1.5 rounded-xl bg-primary px-3 py-2 text-[0.65rem] font-bold text-primary-foreground"
+          >
+            <LocateFixed className="h-3.5 w-3.5" />
+            Use my location
+          </button>
+        </div>
+        <GoogleRouteMap
+          destination={dest}
+          mode={travelMode}
+          showTraffic={layers.traffic}
+          selectedRouteIndex={selectedRouteIndex}
+          onRoutesChange={setLiveRoutes}
+          onLocationStatus={setUsingCurrentLocation}
+          onRouteStatus={setGoogleRouteStatus}
+          refreshLocation={locationRefresh}
+          className="h-[300px]"
+        />
+      </section>
+    )}
 
-  <LiveMap />
-</section>
+    {/* search */}
       {/* search */}
       <div className="relative z-20">
         <div className="glass flex items-center gap-2 rounded-2xl px-3 py-2.5 shadow-soft">
@@ -657,10 +739,20 @@ function Home() {
               setQuery(e.target.value);
               setFocused(true);
             }}
+            onKeyDown={(e) => {
+              if (e.key === "Enter") void searchAnyDestination();
+            }}
             onFocus={() => setFocused(true)}
             placeholder={t.searchPlaceholder}
             className="min-w-0 flex-1 bg-transparent text-sm font-medium outline-none placeholder:text-muted-foreground"
           />
+          <button
+            onClick={() => void searchAnyDestination()}
+            aria-label="Search destination"
+            className="press grid h-9 w-9 place-items-center rounded-xl bg-primary text-primary-foreground"
+          >
+            <Navigation className="h-4 w-4" />
+          </button>
           <button
             onClick={() => void toggleVoice()}
             aria-label={t.voiceSearch}
@@ -729,7 +821,7 @@ function Home() {
       </div>
 
       <section className="rounded-2xl border bg-card p-3 shadow-soft">
-        <p className="mb-2 text-[0.65rem] font-bold uppercase tracking-widest text-muted-foreground">Transportation mode</p>
+        <p className="mb-2 text-[0.65rem] font-bold uppercase tracking-widest text-muted-foreground">Travel mode</p>
         <div className="grid grid-cols-4 gap-2">
           {([
             ["DRIVING", "Car", Car],
@@ -740,7 +832,7 @@ function Home() {
             <button
               key={mode}
               onClick={() => setTravelMode(mode)}
-              className={`press flex flex-col items-center gap-1 rounded-xl py-2 text-[0.68rem] font-semibold ${travelMode === mode ? "bg-primary text-primary-foreground" : "bg-secondary text-secondary-foreground"}`}
+              className={`press flex flex-col items-center gap-1 rounded-xl py-2 text-[0.68rem] font-semibold ${travelMode === mode ? "bg-primary text-primary-foreground" : "bg-secondary"}`}
             >
               <Icon className="h-4 w-4" />
               {label}
@@ -751,13 +843,14 @@ function Home() {
           {orsLoading
             ? "Calculating the route from your current location…"
             : orsRoute
-              ? `OpenRouteService calculated ${orsRoute.duration} for ${currentTravel.label.toLowerCase()}.`
+              ? `Google Directions calculated ${liveSelectedRoute?.durationInTraffic ?? liveSelectedRoute.duration} for ${currentTravel.label.toLowerCase()}.`
             : usingCurrentLocation === true
             ? "Live travel times are calculated from your current location."
             : usingCurrentLocation === false
               ? "Location access is off — enable it in your browser for travel times from your current location."
               : "Requesting your current location for live travel times…"}
         </p>
+              {googleRouteStatus && <p className={`mt-2 text-[0.68rem] font-medium ${liveRoutes.length ? "text-safe" : "text-warn"}`}>{googleRouteStatus}</p>}
       </section>
 
       <section className="rounded-2xl border bg-card p-3 shadow-soft">
@@ -769,7 +862,6 @@ function Home() {
           {activeRoute && <span className="rounded-full bg-safe/15 px-3 py-1 text-xs font-bold text-safe">Safety {activeRoute.score}/100</span>}
         </div>
         <p className="mt-2 text-xs text-muted-foreground">Why {currentTravel.label}? {currentTravel.reason}</p>
-        {travelMode === "TRANSIT" && <p className="mt-2 text-[0.68rem] font-medium text-muted-foreground">Transit is an estimate. OpenRouteService calculates Car, Walk, and Bike routes.</p>}
         {orsUnavailable && travelMode !== "TRANSIT" && <p className="mt-2 text-[0.68rem] font-medium text-warn">Unable to calculate this route. Allow browser location access and try again.</p>}
       </section>
 
@@ -847,6 +939,41 @@ function Home() {
               <Mini label="Confidence" value="94%" />
             </div>
           </section>
+
+          <section className="rounded-3xl border bg-card p-4 shadow-soft">
+            <div className="flex items-center justify-between gap-3">
+              <div>
+                <p className="text-[0.62rem] font-bold uppercase tracking-widest text-muted-foreground">Safety sources</p>
+                <p className="mt-1 text-sm font-bold">{dest.tags.includes("Geocoded destination") ? "Destination intelligence" : "Verified location profile"}</p>
+              </div>
+              <span className="rounded-full bg-primary/10 px-2.5 py-1 text-[0.62rem] font-bold text-primary">15 inputs</span>
+            </div>
+            <div className="mt-3 grid grid-cols-2 gap-2 text-[0.68rem]">
+              <Source name="OpenStreetMap" status="Location" live />
+              <Source name="Weather API" status={liveWeather ? "Live weather" : "Unavailable"} live={Boolean(liveWeather)} />
+              <Source name="Route engine" status={orsRoute ? "Live route" : "Estimate"} live={Boolean(orsRoute)} />
+              <Source name="Community alerts" status="Nearby reports" live={false} />
+            </div>
+            {dest.tags.includes("Geocoded destination") && (
+              <p className="mt-3 text-[0.65rem] leading-relaxed text-muted-foreground">
+                Some local inputs are estimates because this destination has no matching SafePath profile. Connect crime, air-quality, hazard and local incident feeds to replace estimates with verified data.
+              </p>
+            )}
+          </section>
+
+          {dest.facts && (
+            <section className="rounded-3xl border bg-card p-4 shadow-soft">
+              <div className="flex items-center justify-between gap-3">
+                <div>
+                  <p className="text-[0.62rem] font-bold uppercase tracking-widest text-muted-foreground">Place information</p>
+                  <p className="mt-1 text-sm font-bold">{dest.facts.category}</p>
+                </div>
+                <a href={dest.facts.sourceUrl} target="_blank" rel="noreferrer" className="text-[0.65rem] font-bold text-primary">View source</a>
+              </div>
+              <p className="mt-3 text-xs leading-relaxed text-muted-foreground">{dest.facts.description}</p>
+              <p className="mt-2 text-[0.6rem] font-semibold text-muted-foreground">Source: {dest.facts.source}</p>
+            </section>
+          )}
 
           {/* AI summary */}
           <section className="rounded-3xl border bg-card p-5 shadow-soft">
@@ -942,10 +1069,10 @@ function Home() {
                 </div>
                 <div className="mt-3 flex items-center gap-4 text-sm font-semibold">
                   <span className="flex items-center gap-1">
-                    <Timer className="h-4 w-4 text-muted-foreground" /> {live?.durationInTraffic ?? live?.duration ?? `${r.minutes} ${t.minutes}`}
+                    <Timer className="h-4 w-4 text-muted-foreground" /> {live?.durationInTraffic ?? live?.duration ?? (orsRoute && routes.indexOf(r) === selectedRouteIndex ? orsRoute.duration : "Google route unavailable")}
                   </span>
                   <span className="flex items-center gap-1">
-                    <Navigation className="h-4 w-4 text-muted-foreground" /> {live?.distance ?? `${r.km} ${t.km}`}
+                    <Navigation className="h-4 w-4 text-muted-foreground" /> {live?.distance ?? (orsRoute && routes.indexOf(r) === selectedRouteIndex ? orsRoute.distance : "Google route unavailable")}
                   </span>
                   <span className="flex items-center gap-1 text-muted-foreground">
                     <Gauge className="h-4 w-4" /> ETA{" "}
@@ -976,10 +1103,7 @@ function Home() {
                     {t.viewRoute}
                   </button>
                   <button
-                    onClick={() => {
-                      openGoogleMaps(r.id);
-                    }}
-
+                    onClick={() => openGoogleMaps(r.id)}
                     className="press flex-1 rounded-xl bg-primary py-2 text-[0.7rem] font-bold text-primary-foreground"
                   >
                     Open Google Maps
@@ -1004,8 +1128,15 @@ function Home() {
                 <h3 className="font-display text-sm font-bold">{t.playback}</h3>
                 <button
                   onClick={() => {
-                    if (progress == null || progress >= 1) setProgress(0);
-                    setPlaying((p) => !p);
+                    if (playing) {
+                      setPlaying(false);
+                      return;
+                    }
+                    if (progress == null || progress >= 1) {
+                      startNavigation(activeRoute.id, false);
+                    } else {
+                      setPlaying(true);
+                    }
                   }}
                   className="press flex items-center gap-1.5 rounded-xl bg-primary px-3 py-1.5 text-[0.7rem] font-bold text-primary-foreground"
                 >
@@ -1023,11 +1154,11 @@ function Home() {
                 <Mini label="Speed" value={`${playing ? 38 + Math.round((progress ?? 0) * 22) : 0} km/h`} />
                 <Mini
                   label="Remaining"
-                  value={`${(activeRoute.km * (1 - (progress ?? 0))).toFixed(1)} km`}
+                  value={`${(displayedDistanceKm * (1 - (progress ?? 0))).toFixed(1)} km`}
                 />
                 <Mini
                   label="ETA"
-                  value={`${Math.max(0, Math.round(activeRoute.minutes * (1 - (progress ?? 0))))} min`}
+                  value={`${Math.max(0, Math.round(displayedDurationMinutes * (1 - (progress ?? 0))))} min`}
                 />
               </div>
               <p className="mt-3 flex items-center gap-2 rounded-2xl bg-secondary px-3 py-2 text-[0.68rem] font-medium">
@@ -1095,7 +1226,7 @@ function Home() {
           </div>
         </div>
       )}
-
+      
       <VoiceFab listening={listening} onClick={() => void toggleVoice(true)} label={t.voiceSearch} />
       <VoiceSubtitles text={subtitle} speaking={subtitleSpeaking} />
       <VoiceSheet
@@ -1165,6 +1296,17 @@ function EmptyState({ onPick }: { onPick: (id: string, name: string) => void }) 
   );
 }
 
+function parseDurationMinutes(value: string) {
+  const hours = Number(value.match(/(\d+)\s*(?:hr|hour)/i)?.[1] ?? 0);
+  const minutes = Number(value.match(/(\d+)\s*(?:min|minute)/i)?.[1] ?? 0);
+  return hours * 60 + minutes || Math.max(1, Number.parseInt(value, 10) || 1);
+}
+
+function parseDistanceKm(value: string) {
+  const distance = Number.parseFloat(value.replace(",", ".")) || 0;
+  return /m\b/i.test(value) && !/km/i.test(value) ? distance / 1000 : distance;
+}
+
 function Mini({ label, value }: { label: string; value: string }) {
   return (
     <div className="rounded-2xl bg-secondary px-2 py-2.5">
@@ -1172,6 +1314,15 @@ function Mini({ label, value }: { label: string; value: string }) {
         {label}
       </p>
       <p className="mt-0.5 text-sm font-bold">{value}</p>
+    </div>
+  );
+}
+
+function Source({ name, status, live }: { name: string; status: string; live: boolean }) {
+  return (
+    <div className="rounded-xl bg-secondary px-2.5 py-2">
+      <p className="font-semibold">{name}</p>
+      <p className={`mt-0.5 text-[0.6rem] ${live ? "text-safe" : "text-muted-foreground"}`}>{live ? "● " : "○ "}{status}</p>
     </div>
   );
 }

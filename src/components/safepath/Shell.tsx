@@ -10,11 +10,67 @@ import {
   LogOut,
   WifiOff,
 } from "lucide-react";
-import { useEffect, useState, type ReactNode } from "react";
+import { useEffect, useRef, useState, type ReactNode } from "react";
+import { toast } from "sonner";
 import { useApp, playBeep } from "@/lib/app-state";
 import { SOS_EVENT } from "@/lib/voice";
 import { useAuth } from "@/lib/auth";
 import { useNavigate } from "@tanstack/react-router";
+
+type EmergencyContact = {
+  name: string;
+  phone: string;
+};
+
+function getEmergencyContacts(): EmergencyContact[] {
+  try {
+    const saved = localStorage.getItem("safepath-emergency-contacts");
+    return saved ? JSON.parse(saved) : [];
+  } catch {
+    return [];
+  }
+}
+
+function sendSosMessage() {
+  const contacts = getEmergencyContacts();
+  const phoneNumbers = contacts
+    .map((contact) => contact.phone.replace(/\D/g, ""))
+    .filter(Boolean);
+
+  if (phoneNumbers.length === 0) {
+    toast.error("Add an emergency contact in Settings before using SOS.");
+    return;
+  }
+
+  const openSmsComposer = (latitude?: number, longitude?: number) => {
+    const location =
+      latitude !== undefined && longitude !== undefined
+        ? `https://www.google.com/maps?q=${latitude},${longitude}`
+        : "Location unavailable";
+    const message =
+      "SAFEPATH AI SOS ALERT\n\nI need emergency assistance.\n\n" +
+      `My current location: ${location}\n\nPlease contact me immediately.`;
+
+    window.location.href =
+      `sms:${phoneNumbers.join(",")}?body=${encodeURIComponent(message)}`;
+    toast.success("SOS message ready in your SMS app.");
+  };
+
+  if (!navigator.geolocation) {
+    openSmsComposer();
+    return;
+  }
+
+  navigator.geolocation.getCurrentPosition(
+    (position) =>
+      openSmsComposer(position.coords.latitude, position.coords.longitude),
+    () => {
+      toast.error("Location unavailable. Opening SOS message without it.");
+      openSmsComposer();
+    },
+    { enableHighAccuracy: true, timeout: 10000, maximumAge: 0 },
+  );
+}
 
 
 export function Shell({ children }: { children: ReactNode }) {
@@ -101,6 +157,7 @@ function SosButton() {
   const [open, setOpen] = useState(false);
   const [count, setCount] = useState(5);
   const [steps, setSteps] = useState<string[]>([]);
+  const statusTimers = useRef<number[]>([]);
 
   useEffect(() => {
     const handler = () => setOpen(true);
@@ -114,30 +171,39 @@ function SosButton() {
     if (!open) return;
     setCount(5);
     setSteps([]);
+    statusTimers.current.forEach((timer) => window.clearTimeout(timer));
+    statusTimers.current = [];
+    const contacts = getEmergencyContacts().filter((contact) => contact.phone.trim());
+    const contactLabel = `${contacts.length} emergency contact${contacts.length === 1 ? "" : "s"}`;
     const timeline = [
-      "Live location shared with 3 emergency contacts",
-      "Nearest police station notified — ETA 6 min",
-      "Nearest hospital alerted — ambulance dispatched",
+      `Current location shared with ${contactLabel}`,
+      `SOS message prepared for ${contactLabel}`,
       "Loud siren activated on device",
-      "Emergency profile & blood group transmitted",
+      "Medical information included in the SOS message",
     ];
     const tick = setInterval(() => {
       setCount((c) => {
         if (c <= 1) {
           clearInterval(tick);
-          timeline.forEach((s, i) =>
-            setTimeout(() => {
+          sendSosMessage();
+          timeline.forEach((s, i) => {
+            const timer = window.setTimeout(() => {
               setSteps((prev) => [...prev, s]);
               playBeep(sound, 880 - i * 60, 80);
-            }, i * 700),
-          );
+            }, i * 700);
+            statusTimers.current.push(timer);
+          });
           return 0;
         }
         playBeep(sound, 520, 70);
         return c - 1;
       });
     }, 1000);
-    return () => clearInterval(tick);
+    return () => {
+      clearInterval(tick);
+      statusTimers.current.forEach((timer) => window.clearTimeout(timer));
+      statusTimers.current = [];
+    };
   }, [open, sound]);
 
   return (
@@ -182,7 +248,7 @@ function SosButton() {
                 <ul className="mt-4 space-y-2 text-left">
                   {steps.map((s) => (
                     <li
-                      key={s}
+                      key={`${s}-${steps.indexOf(s)}`}
                       className="animate-rise flex items-start gap-2 rounded-2xl bg-safe/10 px-3 py-2 text-xs font-medium text-foreground"
                     >
                       <span className="text-safe">✓</span>
@@ -191,7 +257,7 @@ function SosButton() {
                   ))}
                 </ul>
                 <p className="mt-4 text-[0.65rem] text-muted-foreground">
-                  Prototype demo — no real emergency service was contacted.
+                  Your SMS app was opened with the SOS message prefilled. Send it to notify your contacts.
                 </p>
                 <button
                   onClick={() => setOpen(false)}

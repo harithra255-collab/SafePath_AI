@@ -20,6 +20,8 @@ export function GoogleRouteMap({
   selectedRouteIndex = 0,
   onRoutesChange,
   onLocationStatus,
+  onRouteStatus,
+  refreshLocation = 0,
   className,
 }: {
   destination: SafePathLocation | null;
@@ -28,6 +30,8 @@ export function GoogleRouteMap({
   selectedRouteIndex?: number;
   onRoutesChange?: (routes: LiveRouteInfo[]) => void;
   onLocationStatus?: (usingCurrentLocation: boolean) => void;
+  onRouteStatus?: (status: string) => void;
+  refreshLocation?: number;
   className?: string;
 }) {
   const apiKey = import.meta.env.VITE_GOOGLE_MAPS_API_KEY;
@@ -47,16 +51,17 @@ export function GoogleRouteMap({
         onLocationStatus?.(true);
       },
       () => {
-        setOrigin(defaultCenter);
+        setOrigin(null);
         onLocationStatus?.(false);
       },
       { enableHighAccuracy: true, timeout: 10000, maximumAge: 60_000 },
     );
-  }, []);
+  }, [onLocationStatus, refreshLocation]);
 
   useEffect(() => {
     if (!isLoaded || !destination || !origin) {
       setDirections(null);
+      if (!origin) onRouteStatus?.("Location permission is required for Google Directions.");
       return;
     }
     const service = new google.maps.DirectionsService();
@@ -72,9 +77,11 @@ export function GoogleRouteMap({
         if (status !== "OK" || !result) {
           setDirections(null);
           onRoutesChange?.([]);
+          onRouteStatus?.(`Google Directions unavailable (${status}). Enable the Directions API and billing for this key if access is denied.`);
           return;
         }
         setDirections(result);
+        onRouteStatus?.("Live Google route loaded.");
         onRoutesChange?.(result.routes.map((route) => {
           const leg = route.legs[0];
           return {
@@ -86,7 +93,7 @@ export function GoogleRouteMap({
         }));
       },
     );
-  }, [destination, isLoaded, mode, onRoutesChange, origin]);
+  }, [destination, isLoaded, mode, onRouteStatus, onRoutesChange, origin]);
 
   if (!apiKey) {
     return <MapMessage className={className} message="Add VITE_GOOGLE_MAPS_API_KEY to display the live Google map." />;
@@ -100,7 +107,21 @@ export function GoogleRouteMap({
     <div className={`overflow-hidden rounded-3xl border ${className ?? ""}`}>
       <GoogleMap mapContainerStyle={containerStyle} center={center} zoom={destination ? 13 : 12} options={{ fullscreenControl: false, mapTypeControl: false, streetViewControl: false }}>
         {showTraffic && <TrafficLayer />}
-        {directions ? <DirectionsRenderer directions={directions} options={{ routeIndex: Math.min(selectedRouteIndex, directions.routes.length - 1), suppressMarkers: false, polylineOptions: { strokeColor: "#2563eb", strokeWeight: 6 } }} /> : null}
+        {directions?.routes.map((_, index) => (
+          <DirectionsRenderer
+            key={index}
+            directions={directions}
+            options={{
+              routeIndex: index,
+              suppressMarkers: index !== selectedRouteIndex,
+              polylineOptions: {
+                strokeColor: index === selectedRouteIndex ? "#2563eb" : ["#f97316", "#16a34a", "#9333ea"][index % 3],
+                strokeOpacity: index === selectedRouteIndex ? 0.95 : 0.55,
+                strokeWeight: index === selectedRouteIndex ? 7 : 4,
+              },
+            }}
+          />
+        ))}
       </GoogleMap>
     </div>
   );

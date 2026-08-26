@@ -13,7 +13,7 @@ import {
 } from "recharts";
 import { Shell } from "@/components/safepath/Shell";
 import { useApp } from "@/lib/app-state";
-import { MONTHLY_TRIPS, RISK_DISTRIBUTION, WEEKLY_TREND } from "@/data/safepath";
+import { RISK_DISTRIBUTION } from "@/data/safepath";
 
 export const Route = createFileRoute("/analytics")({
   head: () => ({
@@ -35,16 +35,28 @@ export const Route = createFileRoute("/analytics")({
 });
 
 function AnalyticsPage() {
-  const { t, reports } = useApp();
+  const { t, reports, trips } = useApp();
+  const safeTrips = trips.filter((trip) => trip.score >= 78).length;
+  const moderateTrips = trips.filter((trip) => trip.score >= 60 && trip.score < 78).length;
+  const riskyTrips = trips.filter((trip) => trip.score < 60).length;
+  const averageScore = trips.length ? (trips.reduce((total, trip) => total + trip.score, 0) / trips.length).toFixed(1) : "0.0";
+  const trend = trips.slice(0, 7).reverse().map((trip, index) => ({ day: new Date(trip.startedAt).toLocaleDateString(undefined, { weekday: "short" }), score: trip.score, index }));
+  const monthly = Array.from({ length: 6 }, (_, index) => {
+    const date = new Date();
+    date.setMonth(date.getMonth() - (5 - index));
+    const monthTrips = trips.filter((trip) => new Date(trip.startedAt).getMonth() === date.getMonth() && new Date(trip.startedAt).getFullYear() === date.getFullYear());
+    return { month: date.toLocaleDateString(undefined, { month: "short" }), trips: monthTrips.length, safe: monthTrips.filter((trip) => trip.score >= 78).length };
+  });
+  const distribution = trips.length ? [{ name: "Safe", value: Math.round((safeTrips / trips.length) * 100) }, { name: "Moderate", value: Math.round((moderateTrips / trips.length) * 100) }, { name: "High Risk", value: Math.round((riskyTrips / trips.length) * 100) }] : RISK_DISTRIBUTION.map((item) => ({ ...item, value: 0 }));
   const stats = [
-    { label: t.totalTrips, value: "144", color: "var(--color-primary)" },
-    { label: t.safeTrips, value: "98", color: "var(--color-safe)" },
-    { label: t.moderate, value: "34", color: "var(--color-warn)" },
-    { label: t.highRisk, value: "12", color: "var(--color-danger)" },
-    { label: t.avgScore, value: "76.4", color: "var(--color-primary)" },
-    { label: t.reportsSubmitted, value: `${12 + reports.length}`, color: "var(--color-accent)" },
-    { label: "SOS Used", value: "2", color: "var(--color-danger)" },
-    { label: "AI Accuracy", value: "93%", color: "var(--color-safe)" },
+    { label: t.totalTrips, value: `${trips.length}`, color: "var(--color-primary)" },
+    { label: t.safeTrips, value: `${safeTrips}`, color: "var(--color-safe)" },
+    { label: t.moderate, value: `${moderateTrips}`, color: "var(--color-warn)" },
+    { label: t.highRisk, value: `${riskyTrips}`, color: "var(--color-danger)" },
+    { label: t.avgScore, value: averageScore, color: "var(--color-primary)" },
+    { label: t.reportsSubmitted, value: `${reports.length}`, color: "var(--color-accent)" },
+    { label: "SOS Used", value: `${typeof window === "undefined" ? 0 : Number(localStorage.getItem("sp.sos-count") || 0)}`, color: "var(--color-danger)" },
+    { label: "AI Accuracy", value: trips.length ? "Live" : "No data", color: "var(--color-safe)" },
   ];
 
   const colors = ["var(--color-safe)", "var(--color-warn)", "var(--color-danger)"];
@@ -76,7 +88,7 @@ function AnalyticsPage() {
           <h2 className="font-display text-sm font-bold">Weekly Safety Trend</h2>
           <div className="mt-3 h-44">
             <ResponsiveContainer width="100%" height="100%">
-              <AreaChart data={WEEKLY_TREND}>
+              <AreaChart data={trend}>
                 <defs>
                   <linearGradient id="g1" x1="0" y1="0" x2="0" y2="1">
                     <stop offset="0%" stopColor="var(--color-primary)" stopOpacity={0.5} />
@@ -108,7 +120,7 @@ function AnalyticsPage() {
           <h2 className="font-display text-sm font-bold">Monthly Travel Analytics</h2>
           <div className="mt-3 h-44">
             <ResponsiveContainer width="100%" height="100%">
-              <BarChart data={MONTHLY_TRIPS}>
+              <BarChart data={monthly}>
                 <XAxis dataKey="month" tickLine={false} axisLine={false} fontSize={11} />
                 <Tooltip
                   contentStyle={{
@@ -131,7 +143,7 @@ function AnalyticsPage() {
             <ResponsiveContainer width="100%" height="100%">
               <PieChart>
                 <Pie
-                  data={RISK_DISTRIBUTION}
+                  data={distribution}
                   dataKey="value"
                   innerRadius={45}
                   outerRadius={70}
@@ -153,7 +165,7 @@ function AnalyticsPage() {
             </ResponsiveContainer>
           </div>
           <div className="flex justify-center gap-4">
-            {RISK_DISTRIBUTION.map((r, i) => (
+            {distribution.map((r, i) => (
               <span key={r.name} className="flex items-center gap-1.5 text-[0.68rem] font-semibold">
                 <span className="h-2.5 w-2.5 rounded-full" style={{ background: colors[i] }} />
                 {r.name} {r.value}%

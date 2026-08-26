@@ -21,6 +21,7 @@ export function LiveMap() {
   const [locationError, setLocationError] = useState("");
 
   const { isLoaded, loadError } = useJsApiLoader({
+    id: "safepath-google-map",
     googleMapsApiKey: import.meta.env.VITE_GOOGLE_MAPS_API_KEY,
   });
 
